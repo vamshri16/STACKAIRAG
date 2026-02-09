@@ -1,9 +1,8 @@
 # RAG Pipeline - PDF Knowledge Base System
 
-A production-ready Retrieval-Augmented Generation (RAG) pipeline for querying PDF documents using semantic search and Large Language Models. To comply with the assignment constraints, all retrieval, similarity scoring, and ranking logic is implemented from first principles in Python without using external search, RAG, or vector database libraries.
+A Retrieval-Augmented Generation (RAG) pipeline for querying PDF documents using semantic search and Large Language Models. All retrieval, similarity scoring, and ranking logic is implemented from first principles in Python without using external search, RAG, or vector database libraries.
 
 ## System Architecture
-
 
 ### High-Level Overview
 
@@ -31,68 +30,58 @@ A production-ready Retrieval-Augmented Generation (RAG) pipeline for querying PD
 
 **Endpoint:** `POST /api/ingest`
 
-**Text Extraction Considerations:**
-- **Library Choice:** Using `PyPDF2` with fallback to `pdfplumber` for complex layouts
-- **Handling Scanned PDFs:** OCR support via `pytesseract` for image-based PDFs
-- **Metadata Preservation:** Extract page numbers, file names, creation dates for citation
-- **Error Handling:** Graceful degradation for corrupted or password-protected PDFs
+**Text Extraction:**
+- **Primary:** `PyPDF2` for text extraction
+- **Fallback:** `pdfplumber` for pages where PyPDF2 yields poor results
+- **Metadata:** Page numbers and source filenames are preserved for citation
+- **Error Handling:** Graceful degradation for corrupted or empty pages
 
 **Chunking Strategy:**
 - **Fixed-size chunking with overlap:**
-  - Chunk size: 500-1000 tokens (configurable)
-  - Overlap: 100-200 tokens to preserve context across boundaries
-- **Semantic chunking:** Respect paragraph/section boundaries when possible
+  - Chunk size: 800 tokens (configurable)
+  - Overlap: 150 tokens (configurable)
+  - Sentence boundary awareness: avoids splitting mid-sentence where possible
 - **Considerations:**
   - Small chunks: Better precision, more relevant results
   - Large chunks: More context, but may dilute relevance
   - Overlap: Ensures important information at boundaries isn't lost
-  - Trade-off: Balancing between context preservation and retrieval precision
 
 **Implementation:**
 ```
 PDF → Text Extraction → Chunk Split → Embedding → Vector Store
                     ↓
-              Metadata Extraction
+              Metadata (page, source)
 ```
 
 ### 2. Query Processing
 
 **Intent Detection:**
-- **Rule-based filters:** Detect greetings, chitchat, off-topic queries
-- **Classification:** Use lightweight Mistral model to classify query intent
+- **Regex-based classification** to detect greetings and chitchat
 - **Categories:**
-  - `KNOWLEDGE_SEARCH`: Requires RAG pipeline
-  - `CHITCHAT`: Simple greeting/casual conversation
-  - `CLARIFICATION`: Follow-up questions
-  - `OFF_TOPIC`: Outside knowledge base scope
+  - `KNOWLEDGE_SEARCH`: Requires RAG pipeline (retrieval + generation)
+  - `CHITCHAT`: Greetings and casual conversation (handled without retrieval)
 
-**Query Transformation:**
-- **Query expansion:** Add synonyms, related terms
-- **Query rewriting:** Rephrase for better semantic matching
-- **Contextual enhancement:** Incorporate chat history for follow-ups
-- **Techniques:**
-  - HyDE (Hypothetical Document Embeddings): Generate hypothetical answer, use for search
-  - Multi-query generation: Generate 2-3 variations of the query
-  - Question decomposition: Break complex questions into sub-queries
+**PII Detection:**
+- Queries containing PII patterns (SSN, credit card numbers, emails, phone numbers) are refused before any retrieval occurs
 
 ### 3. Semantic Search
 
 **Vector Store (Custom Implementation):**
-- **No third-party vector DB or search library** (bonus requirement met)
-- **In-memory NumPy matrix:** Embeddings are stored as a NumPy matrix; retrieval is performed using manual cosine similarity without external search libraries
+- **No third-party vector DB or search library** (assignment constraint met)
+- **In-memory NumPy matrix:** Embeddings stored as a NumPy array; retrieval via manual cosine similarity
 - **Cosine similarity:** Computed from first principles: `cos(a, b) = (a · b) / (‖a‖ × ‖b‖)` using NumPy dot products and norms
-- **Top-k retrieval:** `np.argsort` on the similarity scores, selecting the highest-k indices
-- **Persistence:** Save/load embeddings matrix to disk with `np.save`/`np.load` for durability
-- **Embedding model:** Mistral AI embeddings API
+- **Top-k retrieval:** `np.argsort` on similarity scores, selecting the highest-k indices
+- **Persistence:** `np.save`/`np.load` for embeddings, JSON for chunk metadata and document records
+- **Embedding model:** Mistral AI embeddings API (`mistral-embed`)
 
 **Hybrid Search Strategy:**
 - **Semantic search:** Manual cosine similarity over the NumPy embeddings matrix (no FAISS, no scikit-learn)
-- **Keyword search:** Custom term-overlap scoring function implemented in Python (no rank-bm25). Tokenize query and chunk text, compute keyword overlap as the fraction of query terms found in the chunk, normalize score to 0–1
-- **Combination method — Weighted sum:**
+- **Keyword search:** Custom term-overlap scoring — tokenize query and chunk, compute fraction of query terms found in the chunk, normalize to 0–1
+- **Combination — Weighted sum:**
   ```
   final_score = α × semantic_score + (1-α) × keyword_score
   ```
-  where α=0.7 (configurable). Final scores are computed as a weighted sum of semantic similarity and keyword overlap scores. No RRF library or external helpers — just math.
+  where α=0.7 (configurable). No external libraries — just math.
 
 **Search Flow:**
 ```
@@ -107,172 +96,105 @@ Query → [Embedding]    → Cosine Similarity over NumPy matrix (top-k=20)
 ### 4. Post-processing & Re-ranking
 
 **Score-based re-ranking:**
-- Re-ranking is performed by sorting combined relevance scores; no external models are used
 - Sort all candidates by their weighted hybrid score (semantic + keyword)
-- Return the top-k results (default k=5)
+- No external re-ranking models — sorting by combined score only
 
-**Result merging:**
-- Deduplicate chunks from same document
-- Apply diversity penalty to avoid redundant results
+**Deduplication:**
+- Removes duplicate chunks from the same (source, page) pair
 
 **Similarity threshold filtering:**
 - Minimum similarity threshold: 0.7 (configurable)
-- Drop chunks below the threshold
-- If top result < threshold → return "insufficient evidence"
+- Chunks below threshold are dropped
+- If no chunks pass the threshold, returns "insufficient evidence" response
 
 ### 5. LLM Generation
 
 **Mistral AI Integration:**
 - Model: `mistral-large-latest` for generation
-- API endpoint: `https://api.mistral.ai/v1/chat/completions`
+- Embeddings: `mistral-embed` for vectorization
 
-**Prompt Templates by Intent:**
+**Prompt Design:**
+- System prompt instructs the LLM to answer only from provided context
+- Sources formatted as `[Source: filename, Page N]` with score
+- Chitchat handled with a separate lightweight prompt (no retrieval)
 
-**Standard QA Template:**
-```
-You are a helpful AI assistant. Answer the user's question based solely on the provided context.
+**Retry Logic:**
+- Exponential backoff on rate limits (HTTP 429)
+- Fail-fast on authentication errors (HTTP 401)
+- Up to 3 retries on network failures
 
-Context:
-{retrieved_chunks}
+### 6. Hallucination Filter
 
-Question: {user_query}
+**Token-overlap confidence scoring:**
+- Split the answer into sentences
+- For each sentence, compute keyword overlap against source chunk tokens
+- A sentence is "supported" if ≥50% of its tokens appear in at least one source chunk
+- Confidence = supported sentences / total scorable sentences
+- Meta-statements and citations are excluded from scoring
 
-Rules:
-- Only use information from the context above
-- If the context doesn't contain enough information, say "I don't have sufficient information to answer this question"
-- Cite the source (e.g., [Page X]) when making claims
-- Be concise and accurate
-
-Answer:
-```
-
-**List/Table Template:**
-```
-Based on the context below, provide your answer in a structured format.
-
-Context:
-{retrieved_chunks}
-
-Question: {user_query}
-
-Provide a structured response (list, table, or bullet points as appropriate).
-
-Answer:
-```
-
-**Hallucination Prevention:**
-- Evidence checking: Post-process answer to verify each claim against retrieved chunks
-- Sentence-level verification: Flag sentences without supporting evidence
-- Confidence scoring: Return confidence level with each answer
-
-### 6. Bonus Features Implementation
-
-**Citations Required:**
-- Minimum similarity threshold: 0.7
-- If best match < 0.7 → "I don't have sufficient evidence to answer this question"
-- Include page numbers and source document in citations
-
-**Answer Shaping:**
-- Intent-based template selection
-- Structured output parsing for lists/tables
-- JSON mode for extracting structured data
-
-**Hallucination Filters:**
-- **Claim extraction:** Parse answer into atomic claims
-- **Evidence verification:** Check each claim against retrieved chunks using entailment model
-- **Flagging:** Mark unsupported claims or remove them
-- **Confidence score:** Return per-claim confidence
-
-**Query Refusal Policies:**
-- **PII detection:** Refuse to process queries containing SSN, credit card numbers, etc.
-- **Legal/Medical disclaimers:** Add disclaimers for queries in sensitive domains
-- **Out-of-scope:** Detect and refuse queries about topics outside knowledge base
+**Known limitation:** This is a keyword-overlap heuristic, not semantic entailment. It catches obvious hallucinations but can miss subtle contradictions or paraphrased claims.
 
 ## API Endpoints
 
-### Ingestion Endpoints
+### Ingestion
 
-**POST /api/ingest**
-- Upload one or more PDF files
-- Returns: Job ID and processing status
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/ingest` | Upload a single PDF file for processing |
+| `GET` | `/api/documents` | List all ingested documents |
+| `DELETE` | `/api/documents/{document_id}` | Remove a document and its chunks |
 
-**GET /api/ingest/status/{job_id}**
-- Check ingestion status
-- Returns: Progress, chunks created, errors
+### Query
 
-**GET /api/documents**
-- List all ingested documents
-- Returns: Document metadata, page count, ingestion date
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/query` | Submit a question to the RAG system |
 
-**DELETE /api/documents/{document_id}**
-- Remove document from knowledge base
+**Request body:**
+```json
+{
+  "query": "What is...?",
+  "top_k": 5,
+  "include_sources": true,
+  "session_id": null
+}
+```
 
-### Query Endpoints
+**Response:**
+```json
+{
+  "answer": "...",
+  "sources": [{"chunk_id": "...", "source": "file.pdf", "page": 1, "text": "...", "score": 0.85}],
+  "confidence": 0.85,
+  "intent": "KNOWLEDGE_SEARCH",
+  "processing_time_ms": 234
+}
+```
 
-**POST /api/query**
-- Submit a question to the RAG system
-- Request body:
-  ```json
-  {
-    "query": "What is...?",
-    "top_k": 5,
-    "include_sources": true,
-    "session_id": "optional-session-id"
-  }
-  ```
-- Returns:
-  ```json
-  {
-    "answer": "...",
-    "sources": [...],
-    "confidence": 0.85,
-    "intent": "KNOWLEDGE_SEARCH",
-    "processing_time_ms": 234
-  }
-  ```
+### Health
 
-**GET /api/health**
-- System health check
-- Returns: Service status, model availability, index stats
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/health` | Service status, API key config, document and chunk counts |
 
 ## Technology Stack
 
-### Backend Framework
-- **FastAPI**: Modern, fast web framework with async support
-- **Pydantic**: Data validation and settings management
-
-### PDF Processing
-- **PyPDF2**: PDF text extraction
-- **pdfplumber**: Fallback for complex layouts
-- **pytesseract**: OCR for scanned PDFs
-
-### Search & Retrieval
-- **NumPy**: In-memory embeddings matrix with manual cosine similarity (no FAISS, no third-party vector DB)
-- **Custom keyword scorer**: Term-overlap scoring implemented from scratch (no rank-bm25)
-- **Score-based re-ranking**: Sorting by combined score (no cross-encoder, no sentence-transformers)
-
-### LLM Integration
-- **Mistral AI API**: Embeddings and text generation
-- **httpx**: Async HTTP client for API calls
-
-### UI
-- **React + Vite**: Modern frontend build
-- **TailwindCSS**: Styling
-- **Markdown rendering**: For formatted responses
-
-### Other Libraries
-- **NumPy**: Vector operations, cosine similarity, embeddings storage
-- **spaCy**: Text preprocessing, NER for PII detection
-- **asyncio**: Async processing for better performance
+| Category | Technology | Purpose |
+|----------|-----------|---------|
+| Backend | FastAPI | Web framework with auto-generated OpenAPI docs |
+| Validation | Pydantic | Data validation and settings management |
+| PDF Extraction | PyPDF2, pdfplumber | Text extraction with fallback |
+| Vector Operations | NumPy | Embeddings storage, cosine similarity, top-k retrieval |
+| LLM & Embeddings | Mistral AI API | Text generation and embedding via `httpx` |
+| UI | Streamlit | Interactive chat interface |
+| Testing | pytest | Unit and integration tests |
 
 ## Installation & Setup
 
 ### Prerequisites
 - Python 3.9+
-- Node.js 16+ (for UI)
-- Tesseract OCR (optional, for scanned PDFs)
 
-### Backend Setup
+### Setup
 
 ```bash
 # Clone repository
@@ -287,163 +209,163 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 # Set environment variables
-export MISTRAL_API_KEY="CF2DvjIoshzasO0mtBkPj44fo2nXDwPk"
+export MISTRAL_API_KEY="your-api-key-here"
 export DATA_DIR="./data"
 export INDEX_DIR="./indexes"
+```
 
-# Run the application
+### Running the Application
+
+**API server:**
+```bash
 python -m uvicorn app.main:app --reload --port 8000
 ```
 
-### Frontend Setup
-
+**Streamlit UI:**
 ```bash
-cd frontend
-npm install
-npm run dev
+streamlit run streamlit_app.py
 ```
 
-### Access the Application
+### Access
 - Backend API: http://localhost:8000
 - API Documentation: http://localhost:8000/docs
-- Frontend UI: http://localhost:5173
+- Streamlit UI: http://localhost:8501
 
 ## Project Structure
 
 ```
 rag-pipeline/
 ├── app/
-│   ├── main.py                 # FastAPI application entry point
-│   ├── config.py               # Configuration and settings
+│   ├── main.py                      # FastAPI entry point, startup, CORS
+│   ├── config.py                    # Pydantic settings (.env support)
 │   ├── api/
-│   │   ├── ingestion.py        # Ingestion endpoints
-│   │   ├── query.py            # Query endpoints
-│   │   └── health.py           # Health check endpoints
-│   ├── services/
-│   │   ├── pdf_processor.py    # PDF extraction and chunking
-│   │   ├── embeddings.py       # Mistral embeddings integration
-│   │   ├── vector_store.py     # Custom NumPy-based vector store
-│   │   ├── search.py           # Hybrid search (cosine similarity + keyword overlap)
-│   │   ├── reranker.py         # Score-based re-ranking and filtering
-│   │   ├── llm_client.py       # Mistral AI LLM client
-│   │   ├── query_processor.py  # Intent detection and query transformation
-│   │   └── hallucination_filter.py  # Evidence verification
+│   │   ├── ingestion.py             # POST /api/ingest, GET/DELETE /api/documents
+│   │   ├── query.py                 # POST /api/query
+│   │   └── health.py               # GET /api/health
+│   ├── core/
+│   │   ├── ingest_service.py        # Ingestion orchestrator
+│   │   ├── pdf_processor.py         # PDF text extraction and chunking
+│   │   ├── embeddings.py            # Mistral embeddings API client
+│   │   ├── search.py                # Hybrid search (cosine + keyword overlap)
+│   │   ├── reranker.py              # Score-based re-ranking and filtering
+│   │   ├── llm_client.py            # Mistral chat completions client
+│   │   ├── query_processor.py       # Intent detection and query pipeline
+│   │   └── hallucination_filter.py  # Token-overlap confidence scoring
 │   ├── models/
-│   │   └── schemas.py          # Pydantic models
+│   │   └── schemas.py               # Pydantic request/response models
+│   ├── storage/
+│   │   └── vector_store.py          # NumPy-backed in-memory vector store
 │   └── utils/
-│       ├── text_utils.py       # Text processing utilities
-│       └── pii_detector.py     # PII detection
-├── frontend/
-│   ├── src/
-│   │   ├── App.tsx             # Main React component
-│   │   ├── components/         # UI components
-│   │   └── api/                # API client
-│   └── package.json
+│       ├── text_utils.py            # Text cleaning, tokenization, chunking
+│       └── pii_detector.py          # Regex-based PII detection
 ├── tests/
-│   ├── test_ingestion.py
+│   ├── conftest.py                  # Shared fixtures, mock PDF builder
+│   ├── test_text_utils.py
+│   ├── test_vector_store.py
+│   ├── test_query_processor.py
+│   ├── test_llm_client.py
+│   ├── test_api.py
 │   ├── test_search.py
-│   └── test_generation.py
-├── data/                       # Uploaded PDFs
-├── indexes/                    # Persisted vector indexes
+│   ├── test_reranker.py
+│   ├── test_embeddings.py
+│   ├── test_hallucination_filter.py
+│   ├── test_pdf_processor.py
+│   ├── test_pii_detector.py
+│   ├── test_config.py
+│   └── test_integration.py          # Live API tests (requires MISTRAL_API_KEY)
+├── streamlit_app.py                 # Streamlit chat UI
+├── data/                            # Uploaded PDFs
+├── indexes/                         # Persisted embeddings and metadata
 ├── requirements.txt
-├── .env.example
 └── README.md
 ```
 
 ## Design Decisions & Trade-offs
 
 ### 1. Chunking Strategy
-**Decision:** Fixed-size chunking (800 tokens) with 150 token overlap
+**Decision:** Fixed-size chunking (800 tokens) with 150-token overlap and sentence boundary awareness.
+
 **Reasoning:**
 - Predictable chunk sizes for consistent embedding quality
 - Overlap preserves context across boundaries
-- Balance between precision and context
+- Sentence boundaries reduce mid-thought splits
 
-**Alternative considered:** Semantic chunking (paragraph/section-based)
-- Pros: Respects natural document structure
-- Cons: Variable chunk sizes can affect retrieval consistency
+**Trade-off:** Does not respect document structure (headings, sections). A semantic chunking approach would produce more meaningful units but at the cost of variable chunk sizes.
 
 ### 2. Hybrid Search
-**Decision:** Combine semantic (70%) + keyword (30%) search with weighted sum
-**Reasoning:**
-- Semantic search: Better for conceptual matches
-- Keyword search: Better for exact terms, acronyms, entities
-- Weighted sum: Simple, transparent, and requires no external libraries — just math
-- Keyword relevance is computed using a custom term-overlap scoring function implemented in Python
+**Decision:** Combine semantic (70%) + keyword (30%) search with weighted sum.
 
-**Alternative considered:** Pure semantic search
-- Simpler but misses exact keyword matches
+**Reasoning:**
+- Semantic search handles conceptual matches and paraphrases
+- Keyword search catches exact terms, acronyms, and named entities
+- Weighted sum is simple, transparent, and requires no external libraries
+
+**Trade-off:** The keyword scorer uses raw term overlap rather than TF-IDF. All terms are weighted equally, so common words contribute as much as rare, informative ones.
 
 ### 3. Custom Vector Store
-**Decision:** In-memory NumPy matrix with disk persistence
+**Decision:** In-memory NumPy matrix with disk persistence.
+
 **Reasoning:**
-- No external search or vector database libraries (meets bonus requirement and assignment constraints)
-- Embeddings stored as a NumPy matrix; cosine similarity computed manually
-- Top-k retrieval via `np.argsort` — simple and transparent
-- Persistence with `np.save`/`np.load`
+- Meets the assignment constraint: no external search or vector DB libraries
+- Cosine similarity computed manually — simple and transparent
+- Persistence via `np.save`/`np.load` and JSON
 
-**Alternative considered:** FAISS, Chromadb, Pinecone
-- More features but adds forbidden or unnecessary dependencies
+**Trade-off:** Linear scan over all embeddings (O(n)) for each query. Suitable for thousands of chunks; would need approximate nearest neighbor indexing for larger corpora.
 
-### 4. Re-ranking Strategy
-**Decision:** Score-based sorting of hybrid results
+### 4. Re-ranking
+**Decision:** Score-based sorting with threshold filtering and deduplication.
+
 **Reasoning:**
-- Re-ranking is performed by sorting combined relevance scores; no external models are used
-- Chunks below the similarity threshold are dropped
-- Simple, transparent, and requires no additional libraries
+- Simple and explainable — no black-box re-ranker
+- Threshold filtering removes low-quality results
+- Deduplication avoids redundant chunks from the same page
 
-### 5. Hallucination Prevention
-**Decision:** Post-hoc evidence verification
+**Trade-off:** No cross-encoder or learned re-ranker. The combined score may not optimally rank results for all query types.
+
+### 5. Hallucination Filter
+**Decision:** Post-hoc token-overlap confidence scoring.
+
 **Reasoning:**
-- LLM generates answer first (fluent, coherent)
-- Then verify claims against evidence
-- Balance between answer quality and factuality
+- No additional API call required — runs locally
+- Provides a coarse signal for answer grounding
+- Sentences with <50% token overlap against sources are flagged as unsupported
 
-**Alternative considered:** RAG-fusion, constrained decoding
-- More complex to implement
+**Trade-off:** Token overlap is a shallow heuristic. It doesn't verify semantic entailment, so paraphrased claims may be incorrectly flagged and subtle contradictions may be missed.
 
-## Performance Considerations
-
-- **Async endpoints:** Non-blocking I/O for file uploads and LLM calls
-- **Batch processing:** Process multiple PDFs in parallel
-- **Caching:** Cache embeddings and frequent queries
-- **Lazy loading:** Load vector index on first query, not at startup
-- **Connection pooling:** Reuse HTTP connections to Mistral AI API
-
-## Testing Strategy
+## Testing
 
 ```bash
-# Run all tests
-pytest tests/
+# Run all unit tests
+pytest tests/ -v
 
-# Run specific test suite
-pytest tests/test_ingestion.py -v
+# Run a specific test module
+pytest tests/test_search.py -v
 
 # Run with coverage
 pytest --cov=app tests/
+
+# Run integration tests (requires MISTRAL_API_KEY)
+pytest tests/test_integration.py -v -m integration
 ```
+
+The test suite includes 13 modules covering all core components with mocked external dependencies. Integration tests against the live Mistral API are marked with `@pytest.mark.integration` and skipped unless an API key is configured.
 
 ## Future Enhancements
 
-1. **Multi-modal support:** Images, tables from PDFs
-2. **Conversational memory:** Session-based context tracking
-3. **Active learning:** User feedback loop for improving retrieval
-4. **Streaming responses:** SSE for real-time answer generation
-5. **Advanced chunking:** Recursive character splitting, proposition-based chunking
-6. **Query routing:** Route different query types to specialized pipelines
+1. **Query expansion:** HyDE or multi-query paraphrasing to improve recall
+2. **TF-IDF keyword scoring:** Corpus-aware term weighting instead of raw overlap
+3. **Stronger hallucination checks:** Claim-level alignment or lightweight entailment
+4. **Embedding validation:** Store model name and dimensions in index metadata; fail fast on mismatch
+5. **OCR support:** Fallback to `pytesseract` for scanned PDF pages with no extractable text
+6. **MMR diversification:** Avoid near-duplicate chunks in retrieval results
+7. **Streaming responses:** SSE for real-time answer generation
 
-## References & Resources
+## References
 
 - [Mistral AI API Documentation](https://docs.mistral.ai/)
 - [NumPy Documentation](https://numpy.org/doc/)
 - [FastAPI Documentation](https://fastapi.tiangolo.com/)
-- [RAG Best Practices](https://www.pinecone.io/learn/retrieval-augmented-generation/)
-- [Hybrid Search Strategies](https://www.pinecone.io/learn/hybrid-search-intro/)
 
 ## License
 
 MIT
-
-## Contributing
-
-Pull requests are welcome! Please ensure tests pass and code follows PEP 8 style guidelines.

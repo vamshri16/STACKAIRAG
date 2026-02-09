@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 _EMBEDDINGS_FILE = "embeddings.npy"
 _CHUNKS_FILE = "chunks.json"
 _DOCUMENTS_FILE = "documents.json"
+_METADATA_FILE = "metadata.json"
 
 
 class VectorStore:
@@ -118,6 +119,8 @@ class VectorStore:
         """
         os.makedirs(path, exist_ok=True)
 
+        from app.config import settings
+
         # Embeddings.
         if self.embeddings is not None:
             np.save(os.path.join(path, _EMBEDDINGS_FILE), self.embeddings)
@@ -140,6 +143,15 @@ class VectorStore:
         with open(os.path.join(path, _DOCUMENTS_FILE), "w") as f:
             json.dump(docs_data, f, indent=2, default=str)
 
+        # Index metadata — record which model produced the embeddings.
+        dimension = int(self.embeddings.shape[1]) if self.embeddings is not None else 0
+        metadata = {
+            "embedding_model": settings.mistral_embed_model,
+            "embedding_dimension": dimension,
+        }
+        with open(os.path.join(path, _METADATA_FILE), "w") as f:
+            json.dump(metadata, f, indent=2)
+
         logger.info(
             "Vector store saved to %s (%d chunks, %d documents).",
             path, len(self.chunks), len(self.documents),
@@ -151,15 +163,41 @@ class VectorStore:
         If the directory does not exist or is missing files, the store
         remains empty — no error is raised.
         """
+        from app.config import settings
+
         emb_path = os.path.join(path, _EMBEDDINGS_FILE)
         chunks_path = os.path.join(path, _CHUNKS_FILE)
         docs_path = os.path.join(path, _DOCUMENTS_FILE)
+        meta_path = os.path.join(path, _METADATA_FILE)
+
+        # Validate index metadata before loading anything.
+        if os.path.exists(meta_path):
+            with open(meta_path) as f:
+                metadata = json.load(f)
+            saved_model = metadata.get("embedding_model")
+            if saved_model and saved_model != settings.mistral_embed_model:
+                raise ValueError(
+                    f"Embedding model mismatch: index was built with "
+                    f"'{saved_model}' but current config uses "
+                    f"'{settings.mistral_embed_model}'. "
+                    f"Re-ingest your documents or switch back to '{saved_model}'."
+                )
 
         # Embeddings.
         if os.path.exists(emb_path):
             self.embeddings = np.load(emb_path)
         else:
             self.embeddings = None
+
+        # Validate embedding dimensions against metadata.
+        if self.embeddings is not None and os.path.exists(meta_path):
+            saved_dim = metadata.get("embedding_dimension")
+            actual_dim = self.embeddings.shape[1]
+            if saved_dim and saved_dim != actual_dim:
+                raise ValueError(
+                    f"Embedding dimension mismatch: metadata says {saved_dim} "
+                    f"but embeddings.npy has {actual_dim}. Index may be corrupt."
+                )
 
         # Chunks.
         if os.path.exists(chunks_path):

@@ -34,8 +34,10 @@ class TestFormatContext:
         chunks = [(_chunk("Some text here.", "doc.pdf", 1), 0.92)]
         result = format_context(chunks)
         assert "[Source: doc.pdf, Page 1]" in result
-        assert "(Score: 0.92)" in result
         assert "Some text here." in result
+        # Scores must NOT leak into the LLM context.
+        assert "Score" not in result
+        assert "0.92" not in result
 
     def test_multiple_chunks(self):
         chunks = [

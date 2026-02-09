@@ -55,8 +55,8 @@ def _validate_api_key() -> None:
 def format_context(chunks_with_scores: list[tuple[Chunk, float]]) -> str:
     """Convert retrieved chunks into a formatted context string for the prompt."""
     parts: list[str] = []
-    for chunk, score in chunks_with_scores:
-        header = f"[Source: {chunk.source}, Page {chunk.page}] (Score: {score:.2f})"
+    for chunk, _score in chunks_with_scores:
+        header = f"[Source: {chunk.source}, Page {chunk.page}]"
         parts.append(f"{header}\n{chunk.text}")
     return "\n\n".join(parts)
 
