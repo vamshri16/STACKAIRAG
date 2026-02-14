@@ -27,6 +27,16 @@ def contains_pii(text: str) -> bool:
     return False
 
 
+def redact_pii(text: str) -> str:
+    """Replace all recognised PII patterns in *text* with ``[REDACTED]``."""
+    if not text:
+        return text
+    result = text
+    for pattern in _PII_PATTERNS.values():
+        result = pattern.sub("[REDACTED]", result)
+    return result
+
+
 def get_pii_types(text: str) -> list[str]:
     """Return the list of PII category names found in *text*.
 

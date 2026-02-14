@@ -26,8 +26,29 @@ Rules:
 2. Cite your sources inline using [Source: filename, Page N] format.
 3. If the context does not contain enough information to answer, say: \
 "I don't have enough information in the provided documents to answer this question."
-4. Be concise and direct. Do not speculate or extrapolate beyond what the sources state.
-5. If multiple sources support the answer, cite all of them."""
+4. Be concise and direct. Answer ONLY what the question asks — do not include \
+additional information from the context that was not requested.
+5. If multiple sources support the answer, cite all of them.
+6. NEVER include personally identifiable information (PII) in your answer — \
+this includes phone numbers, email addresses, SSNs, credit card numbers, and \
+physical addresses. If asked for PII, respond: "I cannot share personal \
+information from the documents.\""""
+
+_QUERY_REWRITE_SYSTEM_PROMPT = """\
+You are a search query optimizer. Rewrite the user's question to be more \
+specific and search-friendly for retrieving relevant passages from PDF documents. \
+Return ONLY the rewritten query, nothing else. Do not answer the question."""
+
+# Sub-intent formatting instructions appended to the QA system prompt.
+_SUB_INTENT_INSTRUCTIONS: dict[str, str] = {
+    "LIST": "\n7. Format your answer as a numbered list.",
+    "COMPARISON": (
+        "\n7. Structure your answer as a clear comparison "
+        "with arguments for and against each option."
+    ),
+    "SUMMARY": "\n7. Provide a concise summary in 2-4 sentences.",
+    "FACTUAL": "",
+}
 
 _CHITCHAT_SYSTEM_PROMPT = """\
 You are a friendly assistant for a PDF knowledge base. \
@@ -61,10 +82,18 @@ def format_context(chunks_with_scores: list[tuple[Chunk, float]]) -> str:
     return "\n\n".join(parts)
 
 
-def build_qa_prompt(query: str, context: str) -> list[dict]:
-    """Construct the messages array for the Mistral chat API."""
+def build_qa_prompt(
+    query: str, context: str, sub_intent: str = "FACTUAL"
+) -> list[dict]:
+    """Construct the messages array for the Mistral chat API.
+
+    *sub_intent* selects an answer-shaping instruction appended to the
+    system prompt (LIST, COMPARISON, SUMMARY, or FACTUAL).
+    """
+    extra = _SUB_INTENT_INSTRUCTIONS.get(sub_intent, "")
+    system_prompt = _QA_SYSTEM_PROMPT + extra
     return [
-        {"role": "system", "content": _QA_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {
             "role": "user",
             "content": (
@@ -149,6 +178,26 @@ def generate(messages: list[dict]) -> str:
     raise LLMError(
         f"Mistral API request failed after {_MAX_RETRIES} attempts: {last_error}"
     )
+
+
+def rewrite_query(query: str) -> str:
+    """Rewrite a user query to improve retrieval.
+
+    Returns the rewritten query, or the original if the LLM call fails.
+    """
+    messages = [
+        {"role": "system", "content": _QUERY_REWRITE_SYSTEM_PROMPT},
+        {"role": "user", "content": query},
+    ]
+    try:
+        rewritten = generate(messages)
+        rewritten = rewritten.strip().strip('"')
+        if rewritten:
+            logger.debug("Query rewritten: '%s' → '%s'", query, rewritten)
+            return rewritten
+    except LLMError as exc:
+        logger.warning("Query rewrite failed, using original: %s", exc)
+    return query
 
 
 def generate_chitchat_response(query: str) -> str:
