@@ -46,7 +46,7 @@ class IngestResponse(BaseModel):
 
 
 class QueryRequest(BaseModel):
-    """Request body for POST /api/query (Phase 3)."""
+    """Request body for POST /api/query."""
 
     query: str
     top_k: int = 5
@@ -65,13 +65,22 @@ class Source(BaseModel):
 
 
 class QueryResponse(BaseModel):
-    """Returned from POST /api/query (Phase 3)."""
+    """Returned from POST /api/query."""
 
     answer: str
     sources: list[Source]
     confidence: float
     intent: str
     processing_time_ms: int
+
+
+class BatchIngestResponse(BaseModel):
+    """Returned after a batch of PDFs is uploaded and processed."""
+
+    total: int
+    succeeded: int
+    failed: int
+    results: list[IngestResponse]
 
 
 class HealthResponse(BaseModel):

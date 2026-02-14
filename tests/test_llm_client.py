@@ -72,6 +72,30 @@ class TestBuildQaPrompt:
         assert "ONLY" in messages[0]["content"]
         assert "Source:" in messages[0]["content"]
 
+    def test_factual_no_extra_instruction(self):
+        messages = build_qa_prompt("q", "c", sub_intent="FACTUAL")
+        system = messages[0]["content"]
+        assert "numbered list" not in system
+        assert "comparison" not in system
+        assert "summary" not in system.lower().split("concise")[-1:]
+
+    def test_list_sub_intent(self):
+        messages = build_qa_prompt("q", "c", sub_intent="LIST")
+        assert "numbered list" in messages[0]["content"]
+
+    def test_comparison_sub_intent(self):
+        messages = build_qa_prompt("q", "c", sub_intent="COMPARISON")
+        assert "comparison" in messages[0]["content"]
+
+    def test_summary_sub_intent(self):
+        messages = build_qa_prompt("q", "c", sub_intent="SUMMARY")
+        assert "concise summary" in messages[0]["content"]
+
+    def test_default_sub_intent_is_factual(self):
+        default = build_qa_prompt("q", "c")
+        factual = build_qa_prompt("q", "c", sub_intent="FACTUAL")
+        assert default[0]["content"] == factual[0]["content"]
+
 
 class TestParseChatResponse:
     def test_valid_response(self):

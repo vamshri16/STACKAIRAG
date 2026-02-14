@@ -27,40 +27,49 @@ class IngestError(Exception):
 def run(file_path: str, filename: str) -> IngestResponse:
     """Execute the full ingestion pipeline for a single PDF.
 
+    Processes the file, stores results, and persists to disk.
+    Raises ``IngestError`` with a user-facing message on failure.
+    """
+    response = _run_single(file_path, filename)
+
+    # Persist to disk.
+    try:
+        vector_store.save(settings.index_dir)
+    except OSError as exc:
+        logger.error("Failed to persist vector store: %s", exc)
+
+    return response
+
+
+def _run_single(file_path: str, filename: str) -> IngestResponse:
+    """Core ingestion logic for one PDF — no disk persistence.
+
     Steps:
     1. Process PDF → list[Chunk]
     2. Generate embeddings → np.ndarray
-    3. Store chunks + embeddings
-    4. Persist to disk
-    5. Return IngestResponse
+    3. Store chunks + embeddings in memory
+    4. Return IngestResponse
 
     Raises ``IngestError`` with a user-facing message on failure.
     """
     document_id = uuid.uuid4().hex
 
-    # ------------------------------------------------------------------
     # Step 1 — Extract text and create chunks.
-    # ------------------------------------------------------------------
     try:
         chunks = process_pdf(file_path, filename)
     except PDFProcessingError as exc:
         raise IngestError(str(exc)) from exc
 
-    # Count unique pages that produced at least one chunk.
     page_count = len({c.page for c in chunks})
 
-    # ------------------------------------------------------------------
     # Step 2 — Generate embeddings.
-    # ------------------------------------------------------------------
     texts = [c.text for c in chunks]
     try:
         embeddings = get_embeddings_batch(texts)
     except EmbeddingError as exc:
         raise IngestError(f"Embedding failed: {exc}") from exc
 
-    # ------------------------------------------------------------------
-    # Step 3 — Store in vector store.
-    # ------------------------------------------------------------------
+    # Step 3 — Store in vector store (memory only).
     vector_store.add(chunks, embeddings)
 
     doc_info = DocumentInfo(
@@ -72,19 +81,6 @@ def run(file_path: str, filename: str) -> IngestResponse:
     )
     vector_store.documents[document_id] = doc_info
 
-    # ------------------------------------------------------------------
-    # Step 4 — Persist to disk.
-    # ------------------------------------------------------------------
-    try:
-        vector_store.save(settings.index_dir)
-    except OSError as exc:
-        logger.error("Failed to persist vector store: %s", exc)
-        # Don't fail the request — data is in memory and will be saved
-        # on the next successful write or server shutdown.
-
-    # ------------------------------------------------------------------
-    # Step 5 — Return response.
-    # ------------------------------------------------------------------
     logger.info(
         "Ingested '%s': %d pages, %d chunks (doc_id=%s).",
         filename, page_count, len(chunks), document_id,
@@ -101,6 +97,42 @@ def run(file_path: str, filename: str) -> IngestResponse:
             f"into {len(chunks)} chunks"
         ),
     )
+
+
+def run_batch(
+    file_entries: list[tuple[str, str]],
+) -> list[IngestResponse]:
+    """Process multiple PDFs sequentially, persist once at the end.
+
+    Each entry is (file_path, original_filename).
+    Returns one IngestResponse per file — failures are recorded but
+    don't stop the rest of the batch.
+    """
+    results: list[IngestResponse] = []
+
+    for file_path, filename in file_entries:
+        try:
+            response = _run_single(file_path, filename)
+            results.append(response)
+        except IngestError as exc:
+            logger.warning("Batch ingest failed for '%s': %s", filename, exc)
+            results.append(IngestResponse(
+                document_id="",
+                filename=filename,
+                page_count=0,
+                chunk_count=0,
+                status="failed",
+                message=str(exc),
+            ))
+
+    # Persist once after all files are processed.
+    if any(r.status == "completed" for r in results):
+        try:
+            vector_store.save(settings.index_dir)
+        except OSError as exc:
+            logger.error("Failed to persist vector store after batch: %s", exc)
+
+    return results
 
 
 def delete_document(document_id: str) -> None:

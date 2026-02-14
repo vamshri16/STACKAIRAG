@@ -7,7 +7,12 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from app.core.query_processor import detect_intent, process_query, QueryRefusalError
+from app.core.query_processor import (
+    detect_intent,
+    detect_sub_intent,
+    process_query,
+    QueryRefusalError,
+)
 from app.models.schemas import Chunk, QueryRequest
 
 
@@ -60,6 +65,51 @@ class TestDetectIntent:
     def test_case_insensitive(self):
         assert detect_intent("HELLO") == "CHITCHAT"
         assert detect_intent("Hello") == "CHITCHAT"
+
+
+# ---------------------------------------------------------------------------
+# detect_sub_intent — pure logic, no mocking needed
+# ---------------------------------------------------------------------------
+
+
+class TestDetectSubIntent:
+    def test_list_query(self):
+        assert detect_sub_intent("List the key findings") == "LIST"
+
+    def test_list_what_are(self):
+        assert detect_sub_intent("What are the main benefits?") == "LIST"
+
+    def test_list_steps(self):
+        assert detect_sub_intent("Steps to configure the system") == "LIST"
+
+    def test_comparison_compare(self):
+        assert detect_sub_intent("Compare approach A and approach B") == "COMPARISON"
+
+    def test_comparison_vs(self):
+        assert detect_sub_intent("Redis vs Memcached") == "COMPARISON"
+
+    def test_comparison_difference(self):
+        assert detect_sub_intent("What is the difference between X and Y?") == "COMPARISON"
+
+    def test_summary_summarize(self):
+        assert detect_sub_intent("Summarize chapter 3") == "SUMMARY"
+
+    def test_summary_overview(self):
+        assert detect_sub_intent("Give me an overview of the report") == "SUMMARY"
+
+    def test_summary_tldr(self):
+        assert detect_sub_intent("tldr of the document") == "SUMMARY"
+
+    def test_factual_default(self):
+        assert detect_sub_intent("What is the default port?") == "FACTUAL"
+
+    def test_factual_plain_question(self):
+        assert detect_sub_intent("How does authentication work?") == "FACTUAL"
+
+    def test_case_insensitive(self):
+        assert detect_sub_intent("LIST the main topics") == "LIST"
+        assert detect_sub_intent("COMPARE X and Y") == "COMPARISON"
+        assert detect_sub_intent("SUMMARIZE the findings") == "SUMMARY"
 
 
 # ---------------------------------------------------------------------------
