@@ -120,7 +120,7 @@ Query → [Embedding]    → Cosine Similarity over NumPy matrix (top-k=20)
 
 No external re-ranking models — pure score-based pipeline:
 
-1. **Threshold filter:** Drop chunks below 0.7 similarity (configurable). If none pass, return "insufficient evidence".
+1. **Threshold filter:** Drop chunks below 0.45 hybrid score (configurable via `similarity_threshold`). If none pass, return "insufficient evidence".
 2. **Deduplication:** Keep only the highest-scoring chunk per (source, page) pair.
 3. **MMR Diversification:** Iteratively select chunks maximizing `λ * relevance - (1-λ) * max_similarity_to_already_selected` (λ=0.7). Balances relevance with diversity.
 4. **Conditional Context Expansion:** When retrieval quality is weak, automatically pull in chunks from adjacent pages (±1) of the same document and re-rerank.
@@ -190,8 +190,7 @@ No external re-ranking models — pure score-based pipeline:
 {
   "query": "What is...?",
   "top_k": 5,
-  "include_sources": true,
-  "session_id": null
+  "include_sources": true
 }
 ```
 
@@ -343,9 +342,15 @@ The test suite includes 14 modules covering all core components with mocked exte
 
 ## References
 
-- [Mistral AI API Documentation](https://docs.mistral.ai/)
-- [NumPy Documentation](https://numpy.org/doc/)
-- [FastAPI Documentation](https://fastapi.tiangolo.com/)
+- [Mistral AI API Documentation](https://docs.mistral.ai/) — LLM generation and embeddings
+- [FastAPI](https://fastapi.tiangolo.com/) — Web framework
+- [Pydantic](https://docs.pydantic.dev/) — Data validation and settings
+- [NumPy](https://numpy.org/doc/) — Vector operations and cosine similarity
+- [PyPDF2](https://pypdf2.readthedocs.io/) — Primary PDF text extraction
+- [pdfplumber](https://github.com/jsvine/pdfplumber) — Fallback PDF extraction
+- [httpx](https://www.python-httpx.org/) — HTTP client for Mistral API calls
+- [Streamlit](https://docs.streamlit.io/) — Chat UI
+- [pytest](https://docs.pytest.org/) — Test framework
 
 ## License
 

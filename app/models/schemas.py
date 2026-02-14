@@ -51,7 +51,6 @@ class QueryRequest(BaseModel):
     query: str
     top_k: int = 5
     include_sources: bool = True
-    session_id: str | None = None
 
 
 class Source(BaseModel):

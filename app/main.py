@@ -1,5 +1,6 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,10 +14,25 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Create data directories and restore vector store from disk on startup."""
+    os.makedirs(settings.data_dir, exist_ok=True)
+    os.makedirs(settings.index_dir, exist_ok=True)
+
+    index_path = os.path.join(settings.index_dir, "chunks.json")
+    if os.path.exists(index_path):
+        vector_store.load(settings.index_dir)
+
+    yield
+
+
 app = FastAPI(
     title="RAG Pipeline",
     description="PDF Knowledge Base with Retrieval-Augmented Generation",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -30,14 +46,3 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(ingestion.router)
 app.include_router(query.router)
-
-
-@app.on_event("startup")
-def startup() -> None:
-    """Create data directories and restore vector store from disk."""
-    os.makedirs(settings.data_dir, exist_ok=True)
-    os.makedirs(settings.index_dir, exist_ok=True)
-
-    index_path = os.path.join(settings.index_dir, "chunks.json")
-    if os.path.exists(index_path):
-        vector_store.load(settings.index_dir)
