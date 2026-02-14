@@ -47,6 +47,10 @@ _SUB_INTENT_INSTRUCTIONS: dict[str, str] = {
         "with arguments for and against each option."
     ),
     "SUMMARY": "\n7. Provide a concise summary in 2-4 sentences.",
+    "TABLE": (
+        "\n7. Format your answer as a markdown table with clear column headers. "
+        "Use | column | column | format. Include a header row and separator row."
+    ),
     "FACTUAL": "",
 }
 

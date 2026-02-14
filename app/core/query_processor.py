@@ -75,13 +75,17 @@ _SUB_INTENT_PATTERNS: list[tuple[str, re.Pattern]] = [
         r"(summarize|summarise|summary|overview|brief|in short|tldr|tl;dr)",
         re.IGNORECASE,
     )),
+    ("TABLE", re.compile(
+        r"(table|tabulate|tabular|breakdown|side.by.side|matrix)",
+        re.IGNORECASE,
+    )),
 ]
 
 
 def detect_sub_intent(query: str) -> str:
     """Detect the answer format sub-intent for knowledge queries.
 
-    Returns one of: ``"LIST"``, ``"COMPARISON"``, ``"SUMMARY"``, ``"FACTUAL"``.
+    Returns one of: ``"LIST"``, ``"COMPARISON"``, ``"SUMMARY"``, ``"TABLE"``, ``"FACTUAL"``.
     """
     for label, pattern in _SUB_INTENT_PATTERNS:
         if pattern.search(query):

@@ -67,15 +67,17 @@ PDF → Text Extraction → Chunk Split → Embedding → Vector Store
   - `CHITCHAT`: Greetings and casual conversation (handled without retrieval)
 
 **Sub-intent Detection (Answer Shaping):**
-- Knowledge queries are further classified by answer format: `LIST`, `COMPARISON`, `SUMMARY`, `FACTUAL` (default)
-- Each sub-intent selects an intent-specific prompt template to shape the LLM's response format
+- Knowledge queries are further classified by answer format: `LIST`, `COMPARISON`, `SUMMARY`, `TABLE`, `FACTUAL` (default)
+- Each sub-intent selects an intent-specific prompt template to shape the LLM's response format (e.g. numbered lists, markdown tables, concise summaries)
 
 **Query Transformation:**
 - LLM-based query rewriting to improve retrieval (more specific, search-friendly phrasing)
 - Dual search: both original and rewritten queries are searched, results merged with best-score deduplication
 
-**PII Detection:**
-- Queries containing PII patterns (SSN, credit card numbers, emails, phone numbers) are refused before any retrieval occurs
+**PII Protection (input + output):**
+- **Input:** Queries containing PII patterns (SSN, credit card numbers, emails, phone numbers) are refused before any retrieval occurs
+- **Output:** LLM responses are scanned post-generation and any detected PII is replaced with `[REDACTED]` before being returned to the user
+- **Prompt guardrail:** The system prompt instructs the LLM to never output personal information — defense in depth against prompt injection
 
 ### 3. Semantic Search
 
@@ -174,8 +176,7 @@ No external re-ranking models — pure score-based pipeline:
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/ingest` | Upload a single PDF file for processing |
-| `POST` | `/api/ingest/batch` | Upload multiple PDF files for processing |
+| `POST` | `/api/ingest` | Upload one or more PDF files for processing |
 | `GET` | `/api/documents` | List all ingested documents |
 | `DELETE` | `/api/documents/{document_id}` | Remove a document and its chunks |
 
@@ -332,7 +333,7 @@ pytest --cov=app tests/
 pytest tests/test_integration.py -v -m integration
 ```
 
-The test suite includes 14 modules covering all core components with mocked external dependencies. Integration tests against the live Mistral API are marked with `@pytest.mark.integration` and skipped unless an API key is configured.
+The test suite includes 15 modules with 207+ tests covering all core components with mocked external dependencies. Integration tests against the live Mistral API are marked with `@pytest.mark.integration` and skipped unless an API key is configured.
 
 ## Future Enhancements
 

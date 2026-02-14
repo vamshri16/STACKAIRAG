@@ -112,20 +112,24 @@ class TestQueryEndpoint:
 
 
 class TestIngestionEndpoint:
-    def test_non_pdf_returns_400(self):
+    def test_non_pdf_returns_failed(self):
         response = client.post(
             "/api/ingest",
-            files={"file": ("test.txt", b"not a pdf", "text/plain")},
+            files=[("files", ("test.txt", b"not a pdf", "text/plain"))],
         )
-        assert response.status_code == 400
-        assert "PDF" in response.json()["detail"]
+        assert response.status_code == 200
+        data = response.json()
+        assert data["failed"] == 1
+        assert "PDF" in data["results"][0]["message"]
 
-    def test_empty_file_returns_400(self):
+    def test_empty_file_returns_failed(self):
         response = client.post(
             "/api/ingest",
-            files={"file": ("test.pdf", b"", "application/pdf")},
+            files=[("files", ("test.pdf", b"", "application/pdf"))],
         )
-        assert response.status_code == 400
+        assert response.status_code == 200
+        data = response.json()
+        assert data["failed"] == 1
 
 
 # ---------------------------------------------------------------------------

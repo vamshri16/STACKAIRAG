@@ -100,6 +100,15 @@ class TestDetectSubIntent:
     def test_summary_tldr(self):
         assert detect_sub_intent("tldr of the document") == "SUMMARY"
 
+    def test_table_tabulate(self):
+        assert detect_sub_intent("Tabulate the results") == "TABLE"
+
+    def test_table_breakdown(self):
+        assert detect_sub_intent("Give me a breakdown of the features") == "TABLE"
+
+    def test_table_side_by_side(self):
+        assert detect_sub_intent("Show a side by side of the options") == "TABLE"
+
     def test_factual_default(self):
         assert detect_sub_intent("What is the default port?") == "FACTUAL"
 
@@ -110,6 +119,7 @@ class TestDetectSubIntent:
         assert detect_sub_intent("LIST the main topics") == "LIST"
         assert detect_sub_intent("COMPARE X and Y") == "COMPARISON"
         assert detect_sub_intent("SUMMARIZE the findings") == "SUMMARY"
+        assert detect_sub_intent("TABULATE the data") == "TABLE"
 
 
 # ---------------------------------------------------------------------------
