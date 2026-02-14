@@ -36,15 +36,20 @@ A Retrieval-Augmented Generation (RAG) pipeline for querying PDF documents using
 - **Metadata:** Page numbers and source filenames are preserved for citation
 - **Error Handling:** Graceful degradation for corrupted or empty pages
 
-**Chunking Strategy:**
-- **Fixed-size chunking with overlap:**
-  - Chunk size: 800 tokens (configurable)
-  - Overlap: 150 tokens (configurable)
-  - Sentence boundary awareness: avoids splitting mid-sentence where possible
-- **Considerations:**
-  - Small chunks: Better precision, more relevant results
-  - Large chunks: More context, but may dilute relevance
-  - Overlap: Ensures important information at boundaries isn't lost
+**Chunking Strategy — Fixed-size with overlap:**
+- Chunk size: 800 tokens, overlap: 150 tokens (both configurable)
+- Sentence boundary awareness: splits on `[.!?]` rather than cutting mid-sentence
+- 800 tokens balances embedding quality (too short = no context, too long = diluted relevance)
+- 150-token overlap (~19%) ensures boundary content isn't lost
+
+| Strategy | Pros | Cons |
+|----------|------|------|
+| **Fixed-size + overlap (chosen)** | Predictable sizes, consistent embedding quality | Doesn't respect document structure |
+| Recursive/semantic splitting | Meaningful units aligned to sections | Variable sizes; complex without heuristics |
+| Paragraph-based | Natural boundaries | Wildly variable length |
+| Sliding window (no sentence awareness) | Simplest | Mid-sentence splits embed poorly |
+
+**Known limitation:** Sentence detector uses a simple regex — can misfire on abbreviations ("Dr.") and decimals ("3.14"). The strategy also doesn't respect document structure (headings, sections).
 
 **Implementation:**
 ```
@@ -60,6 +65,14 @@ PDF → Text Extraction → Chunk Split → Embedding → Vector Store
 - **Categories:**
   - `KNOWLEDGE_SEARCH`: Requires RAG pipeline (retrieval + generation)
   - `CHITCHAT`: Greetings and casual conversation (handled without retrieval)
+
+**Sub-intent Detection (Answer Shaping):**
+- Knowledge queries are further classified by answer format: `LIST`, `COMPARISON`, `SUMMARY`, `FACTUAL` (default)
+- Each sub-intent selects an intent-specific prompt template to shape the LLM's response format
+
+**Query Transformation:**
+- LLM-based query rewriting to improve retrieval (more specific, search-friendly phrasing)
+- Dual search: both original and rewritten queries are searched, results merged with best-score deduplication
 
 **PII Detection:**
 - Queries containing PII patterns (SSN, credit card numbers, emails, phone numbers) are refused before any retrieval occurs
@@ -83,6 +96,16 @@ PDF → Text Extraction → Chunk Split → Embedding → Vector Store
   ```
   where α=0.7 (configurable). No external libraries — just math.
 
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Weighted fusion (chosen)** | Simple, tunable via one parameter (α) | Assumes comparable score scales |
+| Reciprocal Rank Fusion (RRF) | Scale-invariant | Discards score magnitude |
+| Interleaving | Easy to implement | No unified ranking |
+
+**Why 0.7/0.3:** Semantic handles paraphrases and conceptual matches; keyword is a safety net for acronyms, product codes, and jargon. Both output [0,1] so combination is meaningful without normalization. The keyword scorer uses raw term overlap rather than TF-IDF — all terms weighted equally.
+
+**Trade-off:** Linear scan O(n) over all embeddings. Suitable for thousands of chunks; would need ANN indexing for larger corpora.
+
 **Search Flow:**
 ```
 Query → [Embedding]    → Cosine Similarity over NumPy matrix (top-k=20)
@@ -95,17 +118,27 @@ Query → [Embedding]    → Cosine Similarity over NumPy matrix (top-k=20)
 
 ### 4. Post-processing & Re-ranking
 
-**Score-based re-ranking:**
-- Sort all candidates by their weighted hybrid score (semantic + keyword)
-- No external re-ranking models — sorting by combined score only
+No external re-ranking models — pure score-based pipeline:
 
-**Deduplication:**
-- Removes duplicate chunks from the same (source, page) pair
+1. **Threshold filter:** Drop chunks below 0.7 similarity (configurable). If none pass, return "insufficient evidence".
+2. **Deduplication:** Keep only the highest-scoring chunk per (source, page) pair.
+3. **MMR Diversification:** Iteratively select chunks maximizing `λ * relevance - (1-λ) * max_similarity_to_already_selected` (λ=0.7). Balances relevance with diversity.
+4. **Conditional Context Expansion:** When retrieval quality is weak, automatically pull in chunks from adjacent pages (±1) of the same document and re-rerank.
 
-**Similarity threshold filtering:**
-- Minimum similarity threshold: 0.7 (configurable)
-- Chunks below threshold are dropped
-- If no chunks pass the threshold, returns "insufficient evidence" response
+**Context Expansion — How it works:**
+- Triggers when *either* the best reranked score is below `expansion_score_threshold` (0.4) or fewer than `expansion_coverage_ratio` (60%) of requested results survived reranking.
+- Looks up neighboring chunks (±1 page, same source document) from the vector store.
+- Neighbor scores are discounted (`parent_score × 0.8`) so they rank below the chunk that pulled them in.
+- The expanded candidate set is re-reranked through the full pipeline (threshold, dedup, MMR) to maintain quality gates.
+- When retrieval is already strong, expansion does not fire — no added noise or latency.
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Conditional expansion (chosen)** | Only expands when needed; preserves MMR diversity | Requires threshold tuning |
+| Always expand ±1 page | Maximum recall | Floods candidates with same-document chunks; adds noise |
+| No expansion | Simplest | Misses cross-page context (tables, multi-page explanations) |
+
+**Trade-off:** No cross-encoder or learned re-ranker. Simple and explainable but may not optimally rank for all query types.
 
 ### 5. LLM Generation
 
@@ -115,7 +148,7 @@ Query → [Embedding]    → Cosine Similarity over NumPy matrix (top-k=20)
 
 **Prompt Design:**
 - System prompt instructs the LLM to answer only from provided context
-- Sources formatted as `[Source: filename, Page N]` with score
+- Sources formatted as `[Source: filename, Page N]` in the LLM context (scores excluded from prompts to prevent anchoring)
 - Chitchat handled with a separate lightweight prompt (no retrieval)
 
 **Retry Logic:**
@@ -125,14 +158,15 @@ Query → [Embedding]    → Cosine Similarity over NumPy matrix (top-k=20)
 
 ### 6. Hallucination Filter
 
-**Token-overlap confidence scoring:**
-- Split the answer into sentences
-- For each sentence, compute keyword overlap against source chunk tokens
-- A sentence is "supported" if ≥50% of its tokens appear in at least one source chunk
+**Two-tier confidence scoring:**
+
+1. **Semantic (primary):** Embed each answer sentence and compute cosine similarity against source chunk embeddings. A sentence is "supported" if its best chunk similarity exceeds 0.6.
+2. **Token-overlap (fallback):** If embedding fails, fall back to keyword overlap — a sentence is "supported" if ≥50% of its tokens appear in at least one source chunk.
+
 - Confidence = supported sentences / total scorable sentences
 - Meta-statements and citations are excluded from scoring
 
-**Known limitation:** This is a keyword-overlap heuristic, not semantic entailment. It catches obvious hallucinations but can miss subtle contradictions or paraphrased claims.
+**Known limitation:** Both tiers are heuristic. Semantic similarity is stronger than token overlap but still does not verify logical entailment — subtle contradictions or paraphrased claims may be missed.
 
 ## API Endpoints
 
@@ -141,6 +175,7 @@ Query → [Embedding]    → Cosine Similarity over NumPy matrix (top-k=20)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/api/ingest` | Upload a single PDF file for processing |
+| `POST` | `/api/ingest/batch` | Upload multiple PDF files for processing |
 | `GET` | `/api/documents` | List all ingested documents |
 | `DELETE` | `/api/documents/{document_id}` | Remove a document and its chunks |
 
@@ -248,9 +283,10 @@ rag-pipeline/
 │   │   ├── embeddings.py            # Mistral embeddings API client
 │   │   ├── search.py                # Hybrid search (cosine + keyword overlap)
 │   │   ├── reranker.py              # Score-based re-ranking and filtering
+│   │   ├── context_expander.py      # Conditional context expansion (±1 page)
 │   │   ├── llm_client.py            # Mistral chat completions client
 │   │   ├── query_processor.py       # Intent detection and query pipeline
-│   │   └── hallucination_filter.py  # Token-overlap confidence scoring
+│   │   └── hallucination_filter.py  # Two-tier confidence scoring
 │   ├── models/
 │   │   └── schemas.py               # Pydantic request/response models
 │   ├── storage/
@@ -271,6 +307,7 @@ rag-pipeline/
 │   ├── test_hallucination_filter.py
 │   ├── test_pdf_processor.py
 │   ├── test_pii_detector.py
+│   ├── test_context_expander.py
 │   ├── test_config.py
 │   └── test_integration.py          # Live API tests (requires MISTRAL_API_KEY)
 ├── streamlit_app.py                 # Streamlit chat UI
@@ -279,58 +316,6 @@ rag-pipeline/
 ├── requirements.txt
 └── README.md
 ```
-
-## Design Decisions & Trade-offs
-
-### 1. Chunking Strategy
-**Decision:** Fixed-size chunking (800 tokens) with 150-token overlap and sentence boundary awareness.
-
-**Reasoning:**
-- Predictable chunk sizes for consistent embedding quality
-- Overlap preserves context across boundaries
-- Sentence boundaries reduce mid-thought splits
-
-**Trade-off:** Does not respect document structure (headings, sections). A semantic chunking approach would produce more meaningful units but at the cost of variable chunk sizes.
-
-### 2. Hybrid Search
-**Decision:** Combine semantic (70%) + keyword (30%) search with weighted sum.
-
-**Reasoning:**
-- Semantic search handles conceptual matches and paraphrases
-- Keyword search catches exact terms, acronyms, and named entities
-- Weighted sum is simple, transparent, and requires no external libraries
-
-**Trade-off:** The keyword scorer uses raw term overlap rather than TF-IDF. All terms are weighted equally, so common words contribute as much as rare, informative ones.
-
-### 3. Custom Vector Store
-**Decision:** In-memory NumPy matrix with disk persistence.
-
-**Reasoning:**
-- Meets the assignment constraint: no external search or vector DB libraries
-- Cosine similarity computed manually — simple and transparent
-- Persistence via `np.save`/`np.load` and JSON
-
-**Trade-off:** Linear scan over all embeddings (O(n)) for each query. Suitable for thousands of chunks; would need approximate nearest neighbor indexing for larger corpora.
-
-### 4. Re-ranking
-**Decision:** Score-based sorting with threshold filtering and deduplication.
-
-**Reasoning:**
-- Simple and explainable — no black-box re-ranker
-- Threshold filtering removes low-quality results
-- Deduplication avoids redundant chunks from the same page
-
-**Trade-off:** No cross-encoder or learned re-ranker. The combined score may not optimally rank results for all query types.
-
-### 5. Hallucination Filter
-**Decision:** Post-hoc token-overlap confidence scoring.
-
-**Reasoning:**
-- No additional API call required — runs locally
-- Provides a coarse signal for answer grounding
-- Sentences with <50% token overlap against sources are flagged as unsupported
-
-**Trade-off:** Token overlap is a shallow heuristic. It doesn't verify semantic entailment, so paraphrased claims may be incorrectly flagged and subtle contradictions may be missed.
 
 ## Testing
 
@@ -348,17 +333,13 @@ pytest --cov=app tests/
 pytest tests/test_integration.py -v -m integration
 ```
 
-The test suite includes 13 modules covering all core components with mocked external dependencies. Integration tests against the live Mistral API are marked with `@pytest.mark.integration` and skipped unless an API key is configured.
+The test suite includes 14 modules covering all core components with mocked external dependencies. Integration tests against the live Mistral API are marked with `@pytest.mark.integration` and skipped unless an API key is configured.
 
 ## Future Enhancements
 
-1. **Query expansion:** HyDE or multi-query paraphrasing to improve recall
-2. **TF-IDF keyword scoring:** Corpus-aware term weighting instead of raw overlap
-3. **Stronger hallucination checks:** Claim-level alignment or lightweight entailment
-4. **Embedding validation:** Store model name and dimensions in index metadata; fail fast on mismatch
-5. **OCR support:** Fallback to `pytesseract` for scanned PDF pages with no extractable text
-6. **MMR diversification:** Avoid near-duplicate chunks in retrieval results
-7. **Streaming responses:** SSE for real-time answer generation
+1. **TF-IDF keyword scoring:** Corpus-aware term weighting instead of raw overlap
+2. **OCR support:** Fallback to `pytesseract` for scanned PDF pages with no extractable text
+3. **Streaming responses:** SSE for real-time answer generation
 
 ## References
 

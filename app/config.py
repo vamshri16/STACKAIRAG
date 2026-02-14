@@ -11,8 +11,12 @@ class Settings(BaseSettings):
     chunk_overlap: int = 150
     top_k_retrieval: int = 20
     top_k_final: int = 5
-    similarity_threshold: float = 0.7
+    similarity_threshold: float = 0.45
     semantic_weight: float = 0.7
+
+    expansion_score_threshold: float = 0.4
+    expansion_coverage_ratio: float = 0.6
+    expansion_neighbor_discount: float = 0.8
 
     data_dir: str = "./data"
     index_dir: str = "./indexes"

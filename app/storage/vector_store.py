@@ -12,6 +12,7 @@ import os
 
 import numpy as np
 
+from app.config import settings
 from app.models.schemas import Chunk, DocumentInfo
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,20 @@ class VectorStore:
 
         return removed
 
+    def get_chunks_by_source_and_pages(
+        self,
+        source: str,
+        pages: set[int],
+    ) -> list[Chunk]:
+        """Return all chunks matching *source* and any page in *pages*.
+
+        Linear scan — fast enough for typical document sizes.
+        """
+        return [
+            c for c in self.chunks
+            if c.source == source and c.page in pages
+        ]
+
     def clear(self) -> None:
         """Remove everything.  Reset to empty state."""
         self.embeddings = None
@@ -118,8 +133,6 @@ class VectorStore:
         - ``documents.json`` — document records.
         """
         os.makedirs(path, exist_ok=True)
-
-        from app.config import settings
 
         # Embeddings.
         if self.embeddings is not None:
@@ -163,8 +176,6 @@ class VectorStore:
         If the directory does not exist or is missing files, the store
         remains empty — no error is raised.
         """
-        from app.config import settings
-
         emb_path = os.path.join(path, _EMBEDDINGS_FILE)
         chunks_path = os.path.join(path, _CHUNKS_FILE)
         docs_path = os.path.join(path, _DOCUMENTS_FILE)

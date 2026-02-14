@@ -40,7 +40,7 @@ class TestSettingsDefaults:
 
     def test_similarity_threshold(self):
         s = Settings()
-        assert s.similarity_threshold == 0.7
+        assert s.similarity_threshold == 0.45
 
     def test_semantic_weight(self):
         s = Settings()
