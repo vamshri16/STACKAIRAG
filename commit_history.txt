@@ -1,0 +1,15 @@
+f6e7b34 Add TABLE sub-intent, merge ingest endpoint, update PII guardrail and README
+72cc660 Update main, schemas, README and requirements
+9512940 Polish Streamlit UI with wide layout, metrics, and better UX
+acf0f04 Add output PII redaction and prompt-level PII guardrail
+6e63e64 Add conditional context expansion with adjacent page retrieval
+153c7cb Score leakage fix, embedding model validation, test updates
+1c59055 Remove old planning documents
+3925c35 Remove score leakage from LLM context, add embedding model validation
+0283c6b Phase 5: Streamlit UI for RAG interaction
+7f29e98 Phase 4: Test suite — 172 tests across all modules
+1957d5c Phase 3: query & retrieval pipeline (search, reranker, hallucination filter, query API)
+4794cf6 Phase-1 & Phase-2: FastAPI scaffold, ingestion pipeline, schemas, and storage
+4a7e1c1 Phase 1: Foundation & environment setup
+df9388f Rename README.md to Description.md
+64abaf6 Initial commit
